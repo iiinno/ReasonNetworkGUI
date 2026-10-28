@@ -450,33 +450,145 @@ fn now_ms() -> u64 {
 }
 
 fn decode_text_file(bytes: &[u8]) -> String {
-    if bytes.starts_with(&[0xff, 0xfe]) {
-        return decode_utf16_le(&bytes[2..]);
+    let mut remaining = bytes;
+    let mut result = String::with_capacity(bytes.len());
+    let mut previous = LogEncoding::Utf8;
+    while !remaining.is_empty() {
+        let (encoding, bom_length) = if remaining.starts_with(&[0xff, 0xfe]) {
+            (LogEncoding::Utf16Le, 2)
+        } else if remaining.starts_with(&[0xfe, 0xff]) {
+            (LogEncoding::Utf16Be, 2)
+        } else if remaining.starts_with(&[0xef, 0xbb, 0xbf]) {
+            (LogEncoding::Utf8, 3)
+        } else {
+            (detect_log_encoding(remaining, previous), 0)
+        };
+        remaining = &remaining[bom_length..];
+        let end = log_record_end(remaining, encoding);
+        let record = &remaining[..end];
+        match encoding {
+            LogEncoding::Utf8 => result.push_str(&String::from_utf8_lossy(record)),
+            encoding => {
+                let units = record
+                    .chunks_exact(2)
+                    .map(|pair| encoding.unit(pair))
+                    .collect::<Vec<_>>();
+                result.push_str(&String::from_utf16_lossy(&units));
+                if record.len() % 2 != 0 {
+                    result.push('\u{fffd}');
+                }
+            }
+        }
+        remaining = &remaining[end..];
+        previous = encoding;
     }
-    if bytes.starts_with(&[0xfe, 0xff]) {
-        let units = bytes[2..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
-            .collect::<Vec<_>>();
-        return String::from_utf16_lossy(&units);
-    }
+    result
+}
 
-    let sample_length = bytes.len().min(4096);
-    let sample = &bytes[..sample_length];
-    let zero_count = sample.iter().filter(|byte| **byte == 0).count();
-    if sample_length >= 8 && zero_count * 3 > sample_length {
-        decode_utf16_le(bytes)
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogEncoding {
+    Utf8,
+    Utf16Le,
+    Utf16Be,
+}
+
+impl LogEncoding {
+    fn unit(self, pair: &[u8]) -> u16 {
+        match self {
+            Self::Utf16Be => u16::from_be_bytes([pair[0], pair[1]]),
+            _ => u16::from_le_bytes([pair[0], pair[1]]),
+        }
     }
 }
 
-fn decode_utf16_le(bytes: &[u8]) -> String {
-    let units = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect::<Vec<_>>();
-    String::from_utf16_lossy(&units)
+fn log_record_end(bytes: &[u8], encoding: LogEncoding) -> usize {
+    match encoding {
+        LogEncoding::Utf8 => bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |index| index + 1),
+        encoding => bytes
+            .chunks_exact(2)
+            .position(|pair| encoding.unit(pair) == 10)
+            .map_or(bytes.len(), |index| (index + 1) * 2),
+    }
+}
+
+fn detect_log_encoding(bytes: &[u8], previous: LogEncoding) -> LogEncoding {
+    let utf8_end = log_record_end(bytes, LogEncoding::Utf8);
+    let utf8_record = &bytes[..utf8_end];
+    match std::str::from_utf8(utf8_record) {
+        Ok(text) if text.chars().all(log_character) => {
+            if text != "\n" || bytes.len() == 1 {
+                return LogEncoding::Utf8;
+            }
+            // A leading 0A can also be the low byte of the first Japanese unit.
+            let end = log_record_end(bytes, LogEncoding::Utf16Le);
+            if !bytes[..end].ends_with(&[10, 0])
+                || std::str::from_utf8(&bytes[..end])
+                    .is_ok_and(|text| text.chars().all(log_character))
+            {
+                return LogEncoding::Utf8;
+            }
+        }
+        Err(error) if error.error_len().is_none() => return LogEncoding::Utf8,
+        _ => {}
+    }
+    // Include the high byte of a possible UTF-16LE newline in the evidence.
+    let sample = &bytes[..(utf8_end + usize::from(utf8_end < bytes.len())).min(bytes.len())];
+    let mut le_zeroes = 0;
+    let mut be_zeroes = 0;
+    for pair in sample.chunks_exact(2) {
+        le_zeroes += usize::from(pair[1] == 0 && pair[0] != 0);
+        be_zeroes += usize::from(pair[0] == 0 && pair[1] != 0);
+    }
+    if le_zeroes != be_zeroes {
+        // U+4E00 has a zero low byte too. A complete newline is stronger
+        // evidence of byte order than zeros in Japanese character bytes.
+        for pair in bytes.chunks_exact(2) {
+            if pair == [10, 0] {
+                return LogEncoding::Utf16Le;
+            }
+            if pair == [0, 10] {
+                return LogEncoding::Utf16Be;
+            }
+        }
+    }
+    if le_zeroes > be_zeroes {
+        return LogEncoding::Utf16Le;
+    }
+    if be_zeroes > le_zeroes {
+        return LogEncoding::Utf16Be;
+    }
+
+    // Japanese UTF-16 often has no zero bytes. Decode whole code units before
+    // looking for LF: U+4E0A, for example, contains 0A without being a newline.
+    let candidates = if previous == LogEncoding::Utf16Be {
+        [LogEncoding::Utf16Be, LogEncoding::Utf16Le]
+    } else {
+        [LogEncoding::Utf16Le, LogEncoding::Utf16Be]
+    };
+    for encoding in candidates {
+        let end = log_record_end(bytes, encoding);
+        let units = bytes[..end]
+            .chunks_exact(2)
+            .map(|pair| encoding.unit(pair))
+            .collect::<Vec<_>>();
+        if let Ok(text) = String::from_utf16(&units) {
+            if text.chars().all(log_character)
+                && text.chars().any(|character| {
+                    matches!(character, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}')
+                })
+            {
+                return encoding;
+            }
+        }
+    }
+    LogEncoding::Utf8
+}
+
+fn log_character(character: char) -> bool {
+    !character.is_control() || matches!(character, '\t' | '\r' | '\n' | '\u{1b}')
 }
 
 fn clean_terminal_text(value: &str) -> String {
@@ -532,6 +644,134 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn log_bytes(text: &str, encoding: LogEncoding, bom: bool) -> Vec<u8> {
+        let mut bytes = match (encoding, bom) {
+            (LogEncoding::Utf8, true) => vec![0xef, 0xbb, 0xbf],
+            (LogEncoding::Utf16Le, true) => vec![0xff, 0xfe],
+            (LogEncoding::Utf16Be, true) => vec![0xfe, 0xff],
+            _ => Vec::new(),
+        };
+        match encoding {
+            LogEncoding::Utf8 => bytes.extend_from_slice(text.as_bytes()),
+            encoding => {
+                for unit in text.encode_utf16() {
+                    bytes.extend_from_slice(&match encoding {
+                        LogEncoding::Utf16Be => unit.to_be_bytes(),
+                        _ => unit.to_le_bytes(),
+                    });
+                }
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn decodes_mixed_log_records_with_and_without_boms() {
+        for bom in [false, true] {
+            for first in [LogEncoding::Utf8, LogEncoding::Utf16Le] {
+                let second = if first == LogEncoding::Utf8 {
+                    LogEncoding::Utf16Le
+                } else {
+                    LogEncoding::Utf8
+                };
+                let records = [
+                    ("起動しました\r\n", first),
+                    ("接続を確認しました\n", second),
+                    ("\r\n", first),
+                    ("\n", second),
+                    ("server ready\n", first),
+                    ("終了しました", second),
+                ];
+                let bytes = records
+                    .iter()
+                    .flat_map(|(text, encoding)| log_bytes(text, *encoding, bom))
+                    .collect::<Vec<_>>();
+                let expected = records.iter().map(|(text, _)| *text).collect::<String>();
+                assert_eq!(decode_text_file(&bytes), expected, "BOM={bom}");
+            }
+        }
+    }
+
+    #[test]
+    fn decodes_japanese_heavy_utf16_records_without_zero_ratio() {
+        let text = format!("{}\r\n", "日本語の接続確認を開始しました".repeat(400));
+        let mut bytes = log_bytes(&text, LogEncoding::Utf16Le, false);
+        assert!(bytes.iter().filter(|byte| **byte == 0).count() * 3 < bytes.len());
+        bytes.extend_from_slice("UTF-8 の追記\n".as_bytes());
+        assert_eq!(decode_text_file(&bytes), format!("{text}UTF-8 の追記\n"));
+    }
+
+    #[test]
+    fn does_not_split_japanese_code_units_containing_newline_bytes() {
+        for bom in [false, true] {
+            for text in [
+                "上\n",
+                "上上下上\r\n",
+                "日本上語\n",
+                "一上\n",
+                "上\u{100a}\n",
+            ] {
+                let mut bytes = log_bytes(text, LogEncoding::Utf16Le, bom);
+                bytes.extend_from_slice(b"next\n");
+                assert_eq!(decode_text_file(&bytes), format!("{text}next\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_big_endian_records_among_other_encodings() {
+        let records = [
+            ("日本語\r\n", LogEncoding::Utf16Be, true),
+            ("日本上語\n", LogEncoding::Utf16Be, false),
+            ("\n", LogEncoding::Utf16Be, false),
+            ("UTF-8\n", LogEncoding::Utf8, true),
+            ("日本語\n", LogEncoding::Utf16Le, false),
+            ("done", LogEncoding::Utf16Be, true),
+        ];
+        let bytes = records
+            .iter()
+            .flat_map(|(text, encoding, bom)| log_bytes(text, *encoding, *bom))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decode_text_file(&bytes),
+            records.iter().map(|(text, _, _)| *text).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn preserves_utf8_blank_lines_japanese_and_literal_bom_characters() {
+        let text = "\n\n日本語\r\n上\n😀\ntext\u{feff}inside";
+        assert_eq!(decode_text_file(text.as_bytes()), text);
+        assert_eq!(
+            decode_text_file(&log_bytes(text, LogEncoding::Utf8, true)),
+            text
+        );
+        assert_eq!(decode_text_file(&[]), "");
+        for bom in [&[0xff, 0xfe][..], &[0xfe, 0xff], &[0xef, 0xbb, 0xbf]] {
+            assert_eq!(decode_text_file(bom), "");
+        }
+    }
+
+    #[test]
+    fn replaces_incomplete_code_units_and_surrogates_at_the_tail() {
+        for encoding in [LogEncoding::Utf16Le, LogEncoding::Utf16Be] {
+            let mut bytes = log_bytes("日本語", encoding, true);
+            bytes.push(0x42);
+            assert_eq!(decode_text_file(&bytes), "日本語\u{fffd}");
+            let mut bytes = log_bytes("hello ", encoding, true);
+            bytes.extend_from_slice(&match encoding {
+                LogEncoding::Utf16Be => 0xd83du16.to_be_bytes(),
+                _ => 0xd83du16.to_le_bytes(),
+            });
+            assert_eq!(decode_text_file(&bytes), "hello \u{fffd}");
+        }
+        let mut bytes = log_bytes("日本語", LogEncoding::Utf16Le, false);
+        bytes.push(0x42);
+        assert_eq!(decode_text_file(&bytes), "日本語\u{fffd}");
+        assert_eq!(decode_text_file(b"hello \xe3\x81"), "hello \u{fffd}");
+        assert_eq!(decode_text_file(&[0xff]), "\u{fffd}");
+    }
 
     #[test]
     fn decodes_utf16_le_logs_with_nuls() {

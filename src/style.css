@@ -298,7 +298,7 @@ textarea {
   position: relative;
   display: grid;
   width: 100%;
-  grid-template-columns: 9px minmax(0, 1fr) auto;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   gap: var(--size-4-2);
   align-items: start;
   padding: var(--size-4-2) var(--size-4-2) var(--size-4-2) var(--size-4-1);
@@ -348,7 +348,65 @@ textarea {
   min-width: 0;
 }
 
+.agent-label,
+.agent-avatar,
+.has-agent {
+  --agent-color: hsl(var(--agent-hue) var(--agent-saturation) var(--agent-lightness));
+}
+
+.agent-label,
+.list-title.agent-label {
+  color: var(--agent-color);
+}
+
+.agent-avatar {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  margin-top: 2px;
+  border: 1px solid color-mix(in srgb, var(--agent-color) 35%, transparent);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--agent-color) 12%, transparent);
+  color: var(--agent-color);
+  font-size: var(--font-ui-smaller);
+  font-weight: 650;
+}
+
+.has-agent {
+  padding-left: 12px;
+  border-left: 3px solid var(--agent-color);
+}
+
+.has-agent .main-title {
+  color: var(--agent-color);
+}
+
+.session-agent {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--font-ui-smaller);
+}
+
+.chip-row .session-agent {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0;
+}
+
+.list-meta .status-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  margin-top: 0;
+}
+
+.list-row:focus-visible {
+  outline: 2px solid var(--background-modifier-border-focus);
+  outline-offset: -2px;
+}
+
 .list-title {
+  display: block;
   overflow: hidden;
   color: var(--text-normal);
   font-size: var(--font-ui-small);
@@ -359,6 +417,7 @@ textarea {
 }
 
 .list-detail {
+  display: block;
   margin-top: 2px;
   overflow: hidden;
   color: var(--text-muted);
@@ -369,8 +428,11 @@ textarea {
 }
 
 .list-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding-top: 1px;
-  color: var(--text-faint);
+  color: var(--text-muted);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -510,7 +572,7 @@ textarea {
   min-height: 0;
   flex: 1;
   overflow: auto;
-  scroll-behavior: smooth;
+  overflow-anchor: none;
 }
 
 .main-content {
@@ -529,7 +591,7 @@ textarea {
 
 .chip {
   display: inline-flex;
-  min-height: 24px;
+  min-height: 27px;
   align-items: center;
   gap: 5px;
   padding: 2px 9px;
@@ -537,7 +599,7 @@ textarea {
   border-radius: 999px;
   background: var(--background-secondary);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
 }
 

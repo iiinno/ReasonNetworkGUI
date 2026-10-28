@@ -1,4 +1,6 @@
 :root {
+  --agent-saturation: 48%;
+  --agent-lightness: 72%;
   --color-base-00: #1e1e1e;
   --color-base-05: #212121;
   --color-base-10: #242424;
@@ -85,6 +87,7 @@
 }
 
 html[data-theme="light"] {
+  --agent-lightness: 36%;
   --color-base-00: #ffffff;
   --color-base-05: #fafafa;
   --color-base-10: #f4f4f5;

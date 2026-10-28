@@ -1,4 +1,6 @@
 import "./style.css";
+import { patchHtml } from "./dom";
+import { agentLabel, agentStyle, colorAgentMentions } from "./agent-colors";
 
 import {
   agentAddress,
@@ -81,6 +83,8 @@ let loadedSessionPath: string | null = null;
 let loadingSessionPath: string | null = null;
 let noticeTimer: number | null = null;
 let pendingSend: { address: string; message: string } | null = null;
+let dashboardFingerprint = "";
+let renderedSelection = "";
 
 const app = requiredElement<HTMLDivElement>("#app");
 
@@ -331,15 +335,13 @@ function setPanel(panel: Panel): void {
 
   hideRailActiveExcept(panel);
   renderSidebar();
-  renderMain(true);
+  renderMain();
   closeMobileSidebar();
   ensureSelectedSessionDetail();
 }
 
 function setSelection(selection: Selection, refreshView = true): void {
-  if (selection.kind !== "agent") {
-    saveCurrentDraft();
-  }
+  saveCurrentDraft();
   const previous = state.selection;
   state.selection = selection;
 
@@ -354,7 +356,7 @@ function setSelection(selection: Selection, refreshView = true): void {
 
   if (refreshView) {
     renderSidebar();
-    renderMain(true);
+    renderMain();
   }
   ensureSelectedSessionDetail();
   closeMobileSidebar();
@@ -368,12 +370,23 @@ async function refreshDashboard(manual = false): Promise<void> {
 
   try {
     const dashboard = await invoke<Dashboard>("get_dashboard");
+    const { generatedAt: _generatedAt, ...data } = dashboard;
+    const fingerprint = JSON.stringify(data);
+    const changed = fingerprint !== dashboardFingerprint;
+    saveCurrentDraft();
+    const previousSelection = JSON.stringify(state.selection);
     state.dashboard = dashboard;
+    state.loading = false;
     reconcileSelection();
+    if (previousSelection !== JSON.stringify(state.selection)) {
+      const agent = selectedAgent();
+      state.composerDraft = agent ? drafts.get(agentAddress(agent)) ?? "" : "";
+    }
     renderStatusbar();
-    renderSidebar();
-    if (!(document.activeElement instanceof HTMLElement && document.activeElement.id === "message-input")) {
+    if (changed) {
+      renderSidebar();
       renderMain();
+      dashboardFingerprint = fingerprint;
     }
     ensureSelectedSessionDetail();
     if (manual) {
@@ -386,7 +399,7 @@ async function refreshDashboard(manual = false): Promise<void> {
     refreshInFlight = false;
     refresh?.classList.remove("is-spinning");
     if (!state.dashboard) {
-      renderMain(true);
+      renderMain();
     }
   }
 }
@@ -472,18 +485,18 @@ function renderSidebar(): void {
     const source = state.dashboard.serveLog;
     setSidebarText("Serve", "常駐 Codex のログ");
     const list = element("#sidebar-list");
-    list.innerHTML =
+    patchHtml(list,
       source.state === "ok"
         ? `<div class="sidebar-note"><strong>${source.data.split(/\r?\n/).length} 行</strong>~\\muse-reason\\serve.log</div>`
-        : `<div class="sidebar-note"><strong>読み取り失敗</strong>${escapeHtml(source.error)}</div>`;
+        : `<div class="sidebar-note"><strong>読み取り失敗</strong>${escapeHtml(source.error)}</div>`);
   } else {
     const source = state.dashboard.inbox;
     setSidebarText("Inbox", "ユーザー宛メッセージ");
     const list = element("#sidebar-list");
-    list.innerHTML =
+    patchHtml(list,
       source.state === "ok"
         ? `<div class="sidebar-note"><strong>${source.data.split(/\r?\n/).length} 行</strong>reason.exe network inbox の出力</div>`
-        : `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`;
+        : `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`);
   }
 }
 
@@ -499,7 +512,7 @@ function renderAgentSidebar(): void {
 
   const list = element("#sidebar-list");
   if (source.state === "error") {
-    list.innerHTML = `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`;
+    patchHtml(list, `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`);
     return;
   }
 
@@ -521,9 +534,9 @@ function renderAgentSidebar(): void {
     .sort(compareAgents);
 
   if (items.length === 0) {
-    list.innerHTML = `<div class="sidebar-note"><strong>該当なし</strong>${
+    patchHtml(list, `<div class="sidebar-note"><strong>該当なし</strong>${
       source.data.sessions.length === 0 ? "接続中のセッションはありません。" : "絞り込み条件を変えてください。"
-    }</div>`;
+    }</div>`);
     return;
   }
 
@@ -535,17 +548,17 @@ function renderAgentSidebar(): void {
     groups.set(key, group);
   }
 
-  list.innerHTML = [...groups.entries()]
+  patchHtml(list, [...groups.entries()]
     .map(
       ([person, agentsInGroup]) => `
-        <div class="section-label">
+        <div class="section-label" data-key="group:${escapeHtml(person)}">
           <span>${escapeHtml(person)}</span>
           <span class="count-pill">${agentsInGroup.length}</span>
         </div>
         ${agentsInGroup.map(agentRow).join("")}
       `,
     )
-    .join("");
+    .join(""));
 }
 
 function agentRow(agent: AgentSession): string {
@@ -558,13 +571,15 @@ function agentRow(agent: AgentSession): string {
       type="button"
       data-select-kind="agent"
       data-select-key="${escapeHtml(key)}"
+      style="${agentStyle(key)}"
+      aria-pressed="${selected}"
     >
-      <span class="status-dot ${statusClass(agent.status)}"></span>
+      <span class="agent-avatar" aria-hidden="true">${escapeHtml((agent.name || key).slice(0, 1))}</span>
       <span class="list-main">
-        <span class="list-title">${escapeHtml(agent.name || key)}</span>
+        <span class="list-title agent-label">${escapeHtml(agent.name || key)}</span>
         <span class="list-detail">${escapeHtml(truncate(detail, 56))}</span>
       </span>
-      <span class="list-meta">${escapeHtml(agent.agent || statusLabel(agent.status))}</span>
+      <span class="list-meta"><span class="status-dot ${statusClass(agent.status)}"></span>${escapeHtml(statusLabel(agent.status))}</span>
     </button>
   `;
 }
@@ -579,7 +594,7 @@ function renderSessionSidebar(): void {
 
   const list = element("#sidebar-list");
   if (source.state === "error") {
-    list.innerHTML = `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`;
+    patchHtml(list, `<div class="sidebar-note"><strong>取得失敗</strong>${escapeHtml(source.error)}</div>`);
     return;
   }
 
@@ -590,16 +605,16 @@ function renderSessionSidebar(): void {
   });
 
   if (items.length === 0) {
-    list.innerHTML = `<div class="sidebar-note"><strong>${
+    patchHtml(list, `<div class="sidebar-note"><strong>${
       source.data.length === 0 ? "セッションなし" : "該当なし"
-    }</strong>${source.data.length === 0 ? "新しい rollout ファイルはありません。" : "絞り込み条件を変えてください。"}</div>`;
+    }</strong>${source.data.length === 0 ? "新しい rollout ファイルはありません。" : "絞り込み条件を変えてください。"}</div>`);
     return;
   }
 
-  list.innerHTML = `
+  patchHtml(list, `
     <div class="section-label"><span>最近のセッション</span><span class="count-pill">${items.length}</span></div>
     ${items.map(sessionRow).join("")}
-  `;
+  `);
 }
 
 function sessionRow(session: SessionSummary): string {
@@ -610,36 +625,41 @@ function sessionRow(session: SessionSummary): string {
       type="button"
       data-select-kind="session"
       data-select-key="${escapeHtml(session.path)}"
+      aria-pressed="${selected}"
     >
       <span class="status-dot is-idle"></span>
       <span class="list-main">
         <span class="list-title">${escapeHtml(session.title)}</span>
         <span class="list-detail">${escapeHtml(truncate(baseName(session.cwd), 48))}</span>
+        ${sessionAgentLabels(session)}
       </span>
       <span class="list-meta">${escapeHtml(formatDateTime(session.updatedAt))}</span>
     </button>
   `;
 }
 
-function renderMain(force = false): void {
-  if (
-    !force &&
-    document.activeElement instanceof HTMLElement &&
-    document.activeElement.id === "message-input"
-  ) {
-    return;
-  }
+function renderMain(): void {
   if (!state.dashboard) {
     element("#main-title").textContent = "Reason Network";
     element("#main-subtitle").textContent = "ローカルの観測データを準備しています";
-    element("#main-content").innerHTML = loadingPanel();
+    patchHtml(element("#main-content"), loadingPanel());
     return;
   }
 
   const view = renderSelectionView();
-  element("#main-title").textContent = view.title;
-  element("#main-subtitle").textContent = view.subtitle;
-  element("#main-content").innerHTML = view.html;
+  const selection = JSON.stringify(state.selection);
+  const changedSelection = selection !== renderedSelection;
+  const scroll = element("#main-scroll");
+  const top = scroll.scrollTop;
+  const left = scroll.scrollLeft;
+  setText("#main-title", view.title);
+  setText("#main-subtitle", view.subtitle);
+  const agent = selectedAgent();
+  element(".main-heading").style.cssText = agent ? agentStyle(agentAddress(agent)) : "";
+  element(".main-heading").classList.toggle("has-agent", !!agent);
+  patchHtml(element("#main-content"), `<div data-key="${escapeHtml(selection)}">${view.html}</div>`);
+  scroll.scrollTo({ top: changedSelection ? 0 : top, left: changedSelection ? 0 : left, behavior: "instant" });
+  renderedSelection = selection;
   updateComposerState();
 }
 
@@ -723,6 +743,7 @@ function renderAgentView(): { title: string; subtitle: string; html: string } {
     html: `
       <div class="chip-row">
         <span class="chip"><span class="status-dot ${statusClass(agent.status)}"></span><strong>${escapeHtml(status)}</strong></span>
+        <span class="chip">${agentLabel(address, agent.name || address)}</span>
         <span class="chip">${escapeHtml(agentRepo(agent))}</span>
         ${agent.tier ? `<span class="chip">tier <strong>${escapeHtml(agent.tier)}</strong></span>` : ""}
         ${agent.worker ? '<span class="chip is-accent">worker</span>' : ""}
@@ -739,7 +760,7 @@ function renderAgentView(): { title: string; subtitle: string; html: string } {
         </section>
         <section class="detail-card">
           <div class="detail-label">Address</div>
-          <div class="detail-value mono">${escapeHtml(address)}</div>
+          <div class="detail-value mono">${agentLabel(address)}</div>
         </section>
         <section class="detail-card">
           <div class="detail-label">Repository</div>
@@ -753,7 +774,7 @@ function renderAgentView(): { title: string; subtitle: string; html: string } {
 
       <section class="composer" aria-label="メッセージ送信">
         <div class="composer-header">
-          <span>Send to <span class="mono">${escapeHtml(address)}</span></span>
+          <span>Send to <span class="mono">${agentLabel(address)}</span></span>
           <span>Ctrl + Enter で確認</span>
         </div>
         <textarea
@@ -796,6 +817,7 @@ function renderSessionView(): { title: string; subtitle: string; html: string } 
     <div class="chip-row">
       <span class="chip">id <strong>${escapeHtml(shortId(summary.id))}</strong></span>
       <span class="chip">${escapeHtml(formatDateTime(summary.updatedAt))}</span>
+      ${sessionAgentLabels(summary)}
       ${detail ? `<span class="chip"><strong>${detail.messages.length}</strong> messages</span>` : ""}
     </div>
   `;
@@ -837,8 +859,8 @@ function renderSessionView(): { title: string; subtitle: string; html: string } 
       <div class="conversation">
         ${detail.messages
           .map(
-            (message) => `
-              <article class="message ${message.role === "user" ? "is-user" : "is-assistant"}">
+            (message, index) => `
+              <article data-key="message:${index}" class="message ${message.role === "user" ? "is-user" : "is-assistant"}">
                 <div class="message-author">${message.role === "user" ? "You" : "Codex"}</div>
                 <pre class="message-body">${escapeHtml(message.text)}</pre>
               </article>
@@ -894,6 +916,12 @@ function renderInboxView(): { title: string; subtitle: string; html: string } {
 
 function terminalPanel(title: string, text: string, note: string): string {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const occurrences = new Map<string, number>();
+  const logLines = lines.map((line) => {
+    const occurrence = occurrences.get(line) ?? 0;
+    occurrences.set(line, occurrence + 1);
+    return terminalLine(line, `${line}:${occurrence}`);
+  }).join("");
   return `
     <div class="chip-row">
       <span class="chip"><strong>${lines.length}</strong> lines</span>
@@ -904,13 +932,13 @@ function terminalPanel(title: string, text: string, note: string): string {
         <span class="terminal-light"></span>
         <span class="terminal-title">${escapeHtml(title)}</span>
       </div>
-      <pre class="terminal-body">${lines.map(terminalLine).join("")}</pre>
+      <pre class="terminal-body">${logLines}</pre>
     </section>
   `;
 }
 
-function terminalLine(line: string): string {
-  if (!line) return '<span class="terminal-line"> </span>';
+function terminalLine(line: string, key: string): string {
+  if (!line) return `<span data-key="${escapeHtml(key)}" class="terminal-line"> </span>`;
   const event =
     line.includes("takes work") ||
     line.includes("listening on") ||
@@ -925,25 +953,25 @@ function terminalLine(line: string): string {
       : answer
         ? "terminal-line is-answer"
         : "terminal-line";
-  return `<span class="${className}">${escapeHtml(line)}</span>`;
+  return `<span data-key="${escapeHtml(key)}" class="${className}">${colorAgentMentions(line, agents().map(agentAddress))}</span>`;
 }
 
 function renderStatusbar(): void {
   if (!state.dashboard) return;
   const sources = element("#statusbar-sources");
-  sources.innerHTML = [
+  patchHtml(sources, [
     sourceIndicator("Agents", state.dashboard.agents, "agents"),
     sourceIndicator("Serve", state.dashboard.serveLog, "serve"),
     sourceIndicator("Inbox", state.dashboard.inbox, "inbox"),
     sourceIndicator("Sessions", state.dashboard.sessions, "sessions"),
-  ].join("");
+  ].join(""));
 
   const directory = agentsDirectory();
   const identity = directory
     ? `${directory.team ?? "network"} · ${directory.person}/${directory.machine}`
     : "Reason Network · local";
-  element("#statusbar-identity").textContent = identity;
-  element("#statusbar-updated").textContent = `${formatClock(state.dashboard.generatedAt)} 更新 · 5 秒ポーリング`;
+  setText("#statusbar-identity", identity);
+  setText("#statusbar-updated", `${formatClock(state.dashboard.generatedAt)} 更新 · 5 秒ポーリング`);
 }
 
 function sourceIndicator<T>(label: string, source: SourceState<T>, panel: Panel): string {
@@ -992,7 +1020,7 @@ async function confirmSend(): Promise<void> {
   const request = pendingSend;
   closeSendDialog();
   state.sending = true;
-  renderMain(true);
+  renderMain();
   try {
     const output = await invoke<string>("send_message", {
       address: request.address,
@@ -1009,7 +1037,7 @@ async function confirmSend(): Promise<void> {
     showNotice("error", errorMessage(error));
   } finally {
     state.sending = false;
-    renderMain(true);
+    renderMain();
   }
 }
 
@@ -1033,6 +1061,7 @@ async function ensureSelectedSessionDetail(): Promise<void> {
 }
 
 async function loadSessionDetail(summary: SessionSummary): Promise<void> {
+  const initialLoad = loadedSessionPath !== summary.path;
   const request = ++detailRequest;
   state.sessionLoading = true;
   loadingSessionPath = summary.path;
@@ -1040,7 +1069,7 @@ async function loadSessionDetail(summary: SessionSummary): Promise<void> {
   if (loadedSessionPath !== summary.path) {
     state.sessionDetail = null;
   }
-  renderMain(true);
+  renderMain();
 
   try {
     const detail = await invoke<SessionDetail>("get_session", { path: summary.path });
@@ -1050,14 +1079,14 @@ async function loadSessionDetail(summary: SessionSummary): Promise<void> {
     loadingSessionPath = null;
     state.sessionDetail = detail;
     state.sessionLoading = false;
-    renderMain(true);
-    scrollConversationToBottom();
+    renderMain();
+    if (initialLoad) scrollConversationToBottom();
   } catch (error) {
     if (request !== detailRequest || !isCurrentSession(summary.path)) return;
     sessionErrors.set(summary.path, errorMessage(error));
     loadingSessionPath = null;
     state.sessionLoading = false;
-    renderMain(true);
+    renderMain();
   }
 }
 
@@ -1134,8 +1163,21 @@ function statusClass(status: string): string {
 }
 
 function setSidebarText(title: string, subtitle: string): void {
-  element("#sidebar-title").textContent = title;
-  element("#sidebar-subtitle").textContent = subtitle;
+  setText("#sidebar-title", title);
+  setText("#sidebar-subtitle", subtitle);
+}
+
+function setText(selector: string, text: string): void {
+  const node = element(selector);
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function sessionAgentLabels(session: SessionSummary): string {
+  const normalize = (path: string): string => path.replaceAll("\\", "/").replace(/\/$/, "").toLowerCase();
+  const cwd = normalize(session.cwd);
+  if (!cwd) return "";
+  const related = agents().filter((agent) => agent.repo && normalize(agent.repo) === cwd);
+  return related.map((agent) => `<span class="session-agent" title="作業フォルダーが一致するエージェント">${agentLabel(agentAddress(agent), agent.name || agentAddress(agent))}</span>`).join("");
 }
 
 function hideRailActiveExcept(panel: Panel): void {

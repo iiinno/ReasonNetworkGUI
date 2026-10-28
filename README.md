@@ -40,13 +40,15 @@ npm run tauri build
 | --- | --- | --- |
 | Agents | `reason.exe network who --json` | `{ team, person, machine, machines, sessions }` と各 session の `address/name/person/machine/agent/repo/branch/status/since/doing/worker/tier` に対応 |
 | Codex | `%USERPROFILE%\.codex\sessions\**\rollout-*.jsonl` | 最大 60 ファイルを新しい順に一覧化。選択時に直近 200 件の user / assistant 本文を読む |
-| Serve | `%USERPROFILE%\muse-reason\serve.log` | BOM なし UTF-16LE を含む出力をゼロバイト比率で判定し、ANSI 制御文字を除去 |
+| Serve | `%USERPROFILE%\muse-reason\serve.log` | UTF-8 と UTF-16 の混在を行ごとに判定して復号し、ANSI 制御文字を除去 |
 | Inbox | `reason.exe network inbox` | CLI の標準出力を表示 |
 | Send | `reason.exe network send <address> "<message>"` | 確認ダイアログ後のみ実行。引数はシェル経由ではなくプロセス引数として渡す |
 
 ## 構成
 
 - `src/main.ts` は画面状態、5 秒ポーリング、一覧と詳細の描画、送信確認を担当します。
+- `src/dom.ts` はキーを持つ DOM を再利用し、変更箇所だけを更新します。同一内容の描画はスキップします。
+- `src/agent-colors.ts` はアドレスのハッシュから色相を決め、一覧・詳細・ログに共通の色を使います。セッションのエージェント表示は作業フォルダーの一致から関連付けるため、所有者の確定情報ではありません。
 - `src/style.css` と `src/style-variables.css` は Obsidian 公式 CSS 変数名を使ったレイアウトとダーク / ライトテーマを担当します。
 - `src/tauri.ts` は Tauri v2 の IPC だけを包む小さな境界です。
 - `src-tauri/src/domain.rs` は IPC のデータ形状を定義します。
@@ -65,26 +67,26 @@ npm run tauri build
 
 Codex セッションを開くときは、指定パスを正規化したうえで sessions フォルダ内の `rollout-*.jsonl` であることを確認します。Reason の設定、ネットワーク DB、スケジュールタスクなどは変更しません。テレメトリや外部 API への送信もありません。
 
-## 検証結果
+## 検証状況
 
 2026-10-28 時点:
 
-- TypeScript の `--noEmit` 型検査は成功。
-- Vite の本番フロントエンドビルドは成功。
-- `cargo check --offline` は成功。
-- `cargo test --offline` は 5 件すべて成功。UTF-16LE ログ、ANSI 除去、`who` JSON、会話抽出、ハーネス文脈の除去を確認。
-- `cargo build --release --offline` は成功し、生成した `dist` を埋め込んだ `src-tauri\target\release\reason-network-gui.exe` を作成。
-- Chrome 上の Vite preview とモック IPC で、Agents、会話、Serve log、Inbox、送信確認、取得失敗表示、ライトテーマ、幅 760px の狭いレイアウトを確認。
-- `reason.exe` のバージョンは `0.2.623`。
+- `npm run build` は成功。TypeScript の `--noEmit` 型検査と Vite の本番ビルドを実行しました。Windows PowerShell の実行ポリシーにより、この環境では `npm.cmd` を使用しています。
+- `src-tauri` での `cargo test --offline` は 11 件すべて成功。UTF-8 と UTF-16LE の混在、BOM の有無、空行、日本語中心の長い行、改行バイトを含む漢字、UTF-16BE、書き込み途中の末尾を確認しました。ANSI 除去、`who` JSON、会話抽出の既存テストも含みます。
+- Chrome 上で `scripts/verify-ui.html` の 16 項目が成功。同一データのポーリングで本文と一覧の DOM 変更がないこと、更新時の送信欄・日本語の下書き・フォーカス・選択位置・スクロールの保持、エージェント切り替え時の下書き復元、ログ追記と会話更新時の既存 DOM の再利用を確認しました。
+- 同じ確認ページで、一覧・詳細ヘッダー・Serve ログ・関連セッションの色の一致と、色計算のモジュールを再ロードしても同じアドレスの色相が変わらないことを確認しました。色は CSS 変数による HSL で生成し、名前も併記します。
+- `npm run tauri build` は Rust の release ビルドと新しい `src-tauri\target\release\reason-network-gui.exe` の生成まで成功しました。ただし MSI 作成時に Windows Installer サービスへアクセスできず、WiX の `LGHT0217` でコマンド全体は失敗しています。
+- `npm run tauri build -- --no-bundle` は成功。インストーラーを作らずに exe を生成する経路も確認しました。通常の `npm run tauri build` の成功を意味するものではありません。
+- 18:52 に `--no-bundle` で生成した新 exe を 18:54 に起動し、プロセスの継続稼働、`Reason Network` ウィンドウの存在、応答状態を確認しました。通常起動では WebView2 が `0x800700AA`（リソース使用中）で終了したため、起動プロセスに限って `WEBVIEW2_USER_DATA_FOLDER` を `src-tauri\target\release\webview-profile` に指定しています。実ウィンドウでの IPC と点滅解消の目視確認は未実施です。
 
-`npm install` はこの実行環境のネットワーク制限で npm registry に接続できず完了していません。そのため `npm run tauri build` は未実行です。上記のフロントエンドビルドは、ローカルに既存だった Vite 実行物を使って `dist` の生成まで確認しています。通常のネットワーク環境では README の起動手順から依存関係を取得してください。
+UI の回帰確認を再実行するには、`npm run dev -- --configLoader runner` を実行して `http://127.0.0.1:1420/scripts/verify-ui.html` を Chrome で開きます。右上に `PASS: 16 checks` が表示されます。このページは IPC をローカルの固定データに置き換え、Reason CLI や実ネットワークへ接続しません。ポーリングのコールバックを手動で進めるため、実時間での 5 秒間隔や WebView2 の描画を検証するものではありません。
 
-生成した Tauri 実行ファイル自体は完成していますが、このエージェント実行環境ではネイティブウィンドウのセットアップが OS のアクセス拒否 `os error 5` で止まりました。同じ制限は `reason.exe network who --json` でも発生しています。そのため、実ウィンドウ上での IPC 接続確認は未実施です。
+Reason の設定変更やテスト送信は行っていません。フロントエンドビルド、インストーラーなしの exe 生成と起動は確認済みです。MSI 作成はこの環境の Windows Installer アクセス制限により未完了です。
 
 ## 判断メモ
 
 - この実行環境では `reason.exe network who --json` が OS のアクセス拒否 `os error 5` で失敗しました。実装は Reason CLI 内の `who --json` 出力契約に合わせ、実行失敗時は Agents とステータスバーにエラーを表示する経路にしています。実ネットワーク応答での表示確認は未実施です。
-- `serve.log` は BOM のない UTF-16LE 風のバイト列と ANSI エスケープを含みます。UTF-8 固定にせず、内容から文字コードを判定する方式にしました。
+- `serve.log` の復号はファイル全体のゼロバイト比率から行単位の判定へ変更しました。有効な UTF-8 行を優先し、UTF-16 はコード単位で改行を探すため、漢字のバイト列を改行と取り違えません。BOM のないデータには文字コードが一意に定まらない場合があるため、判定には内容と直前の文字コードを使います。
 - Codex の JSONL には developer 指示、ツール呼び出し、reasoning、暗号化 content が混在します。会話画面には `response_item` の user / assistant 本文だけを出し、環境コンテキストや skill 注入ブロックは読みやすさのため除去します。
 - テスト送信は仕様どおり行っていません。送信確認 UI とプロセス引数の組み立てだけを実装しています。
 
