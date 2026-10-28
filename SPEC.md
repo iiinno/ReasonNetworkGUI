@@ -1,6 +1,6 @@
 # タスク：Reason Network 用デスクトップ GUI「ReasonNetworkGUI」の新規開発
 
-作業フォルダ： `C:\Users\inoue\Project\ReasonNetworkGUI`（空の状態から構築する）
+作業フォルダ： `%USERPROFILE%\Project\ReasonNetworkGUI`（空の状態から構築する）
 スタック： Tauri v2 + Vite + TypeScript（フロントは React か vanilla TS のうち軽い方を選ぶ）。Windows 向け。
 
 ## 背景
@@ -10,7 +10,7 @@ Reason Network はコーディングエージェント同士が通信する P2P 
 ## データソース（すべてこの PC のローカルで取得する）
 
 1. 参加者・状態： `%LOCALAPPDATA%\Reason\bin\reason.exe network who --json` を定期実行（5 秒間隔程度）して表示する。セッションごとに person、address、machine、agent、repo@branch、busy/idle、doing（現在の作業内容）が出る想定。実際の JSON 構造は実行して確認し、それに合わせる。
-2. 常駐 Codex（serve）のログ： `C:\Users\inoue\muse-reason\serve.log`。ANSI エスケープ混じりのテキストなので、表示時に除去する。末尾を読んで依頼と返答の流れを表示する。
+2. 常駐 Codex（serve）のログ： `%USERPROFILE%\muse-reason\serve.log`。ANSI エスケープ混じりのテキストなので、表示時に除去する。末尾を読んで依頼と返答の流れを表示する。
 3. Codex のセッション記録： `%USERPROFILE%\.codex\sessions\` 配下の `rollout-*.jsonl`（新しい順）。JSONL をパースして直近の会話を読みやすく表示する。
 4. ユーザー宛メッセージ： `reason.exe network inbox` の出力を表示する。
 5. 送信： 入力欄から、選択したセッション宛に `reason.exe network send <address> "<message>"` で送信できるようにする。送信前に確認ダイアログを出す。
@@ -35,7 +35,7 @@ Reason Network はコーディングエージェント同士が通信する P2P 
 
 ## 制約
 
-- 変更はこのプロジェクトフォルダの中だけ。Reason の既存セットアップ（`C:\Users\inoue\.reason`、`C:\Users\inoue\muse-reason` 配下、スケジュールタスク等）は読み取りのみで変更しない。
+- 変更はこのプロジェクトフォルダの中だけ。Reason の既存セットアップ（`%USERPROFILE%\.reason`、`%USERPROFILE%\muse-reason` 配下、スケジュールタスク等）は読み取りのみで変更しない。
 - ネットワークへの書き込みは、上記「送信」機能の実装に限る。テスト送信はしない。
 - 依存は必要最小限に。重い UI フレームワークは使わない。
 - 途中で判断に迷う点があれば、勝手に広げず、最小の解釈で進めて README の「判断メモ」に残す。
